@@ -3,7 +3,7 @@
 // ============================================================
 // A top-down vertical scroller using multi-directional sprite
 // animation measurements from Week 5. The world scrolls upward.
-// Orange blob enemies spawn at the top and move toward the player.
+// Enemy avatars spawn at the top and move toward the player.
 // Shoot them with Spacebar in the direction you are facing.
 //
 // Dark square obstacles are loaded from data/obstacles.json.
@@ -13,6 +13,10 @@
 //   sketch.js         — all game logic
 //   data/obstacles.json  — obstacle positions in world coordinates
 //   assets/images/good_avatar.png — multi-directional player sprite sheet
+//   assets/images/evil_avatar.png — multi-directional enemy sprite sheet
+//   assets/images/background_image.jpeg — Scrolling background texture
+//   assets/sounds/game_music_background.mp3 — Looping background music
+//   assets/sounds/sound_effect_shoot.mp3     — Gunfire sound effect
 // ============================================================
 
 // ------------------------------------------------------------
@@ -23,7 +27,7 @@ const SCROLL_SPEED = 0.8;
 let scrollY = 0;
 
 // ------------------------------------------------------------
-// SPRITE CONFIGURATION (From Week 5 Specs)
+// PLAYER SPRITE CONFIGURATION (From Week 5 Specs)
 // ------------------------------------------------------------
 const SPRITE = {
   frameWidth: 75, // width of one frame in pixels
@@ -50,6 +54,29 @@ const SPRITE = {
 };
 
 // ------------------------------------------------------------
+// ENEMY SPRITE CONFIGURATION (New configuration for evil_avatar)
+// ------------------------------------------------------------
+const ENEMY_SPRITE = {
+  frameWidth: 75,
+  frameHeight: 150,
+  numFrames: 4,
+  animSpeed: 15, // Enemy legs move a bit faster
+  scale: 0.5,
+  rows: {
+    down: 0,
+    up: 1,
+    right: 2,
+    left: 3,
+  },
+  offsets: {
+    down: { x: 0, y: 0 },
+    up: { x: 0, y: 0 },
+    right: { x: 0, y: 10 },
+    left: { x: 0, y: 20 },
+  },
+};
+
+// ------------------------------------------------------------
 // BULLET & ENEMY CONFIGURATION
 // ------------------------------------------------------------
 const BULLET_SPEED = 10;
@@ -63,6 +90,10 @@ let spawnTimer = 0;
 // GAME ASSETS & DATA VARIABLES
 // ------------------------------------------------------------
 let goodAvatarSpriteSheet; // Holds good_avatar.png
+let evilAvatarSpriteSheet; // Holds evil_avatar.png
+let bgImg; // Holds background_image.jpeg
+let bgMusic; // Holds game_music_background.mp3
+let shootSound; // Holds sound_effect_shoot.mp3
 let obstacleData;
 let obstacles = [];
 let bgShapes = [];
@@ -108,10 +139,17 @@ let gameState = STATE_PLAY;
 
 // ============================================================
 // preload()
+// Loads assets matching your exact folder structures
 // ============================================================
 function preload() {
   obstacleData = loadJSON("data/obstacles.json");
   goodAvatarSpriteSheet = loadImage("assets/images/good_avatar.png");
+  evilAvatarSpriteSheet = loadImage("assets/images/evil_avatar.png");
+  bgImg = loadImage("assets/images/background_image.jpeg");
+
+  // Audio files loading
+  bgMusic = loadSound("assets/sounds/game_music_background.mp3");
+  shootSound = loadSound("assets/sounds/sound_effect_shoot.mp3");
 }
 
 // ============================================================
@@ -131,7 +169,7 @@ function setup() {
     });
   }
 
-  // Generate background shapes
+  // Generate background ambient accent shapes
   for (let i = 0; i < 80; i++) {
     bgShapes.push({
       x: random(width),
@@ -143,6 +181,11 @@ function setup() {
       g: floor(random(30, 70)),
       b: floor(random(50, 100)),
     });
+  }
+
+  // Fires loop setup cleanly upon application start
+  if (!bgMusic.isPlaying()) {
+    bgMusic.loop();
   }
 }
 
@@ -179,6 +222,40 @@ function draw() {
 }
 
 // ------------------------------------------------------------
+// STATE MANAGEMENT OPERATIONS
+// ------------------------------------------------------------
+function resetGameSequence() {
+  gameState = STATE_PLAY;
+  score = 0;
+  scrollY = 0;
+  spawnTimer = 0;
+  bullets = [];
+  enemies = [];
+
+  player.x = 400;
+  player.y = 370;
+  player.direction = "up";
+  player.dirVector = { x: 0, y: -1 };
+  player.currentFrame = 0;
+  player.frameTimer = 0;
+  player.shootTimer = 0;
+  player.health = player.maxHealth;
+  player.invincible = false;
+  player.invincibleTimer = 0;
+  player.bounceVX = 0;
+  player.bounceVY = 0;
+
+  if (!bgMusic.isPlaying()) {
+    bgMusic.loop();
+  }
+}
+
+function terminateLevel(targetState) {
+  gameState = targetState;
+  bgMusic.stop(); // Stops background tracking immediately when state changes
+}
+
+// ------------------------------------------------------------
 // scrollWorld()
 // ------------------------------------------------------------
 function scrollWorld() {
@@ -188,9 +265,23 @@ function scrollWorld() {
 }
 
 // ------------------------------------------------------------
-// drawBackground()
+// drawBackground() — Seamlessly loops your custom background image
 // ------------------------------------------------------------
 function drawBackground() {
+  push();
+  // Switch image mode to CORNER temporarily to calculate backing loops efficiently
+  imageMode(CORNER);
+
+  // Calculate a moving position that wraps cleanly around the canvas height
+  let imageY1 = scrollY % height;
+  let imageY2 = imageY1 - height;
+
+  // Render two back-to-back images to simulate an endless vertical track
+  image(bgImg, 0, imageY1, width, height);
+  image(bgImg, 0, imageY2, width, height);
+  pop();
+
+  // Render ambient particle shapes on top of the image layout
   noStroke();
   for (let i = 0; i < bgShapes.length; i++) {
     let s = bgShapes[i];
@@ -200,7 +291,7 @@ function drawBackground() {
       s.worldY -= WORLD_LENGTH + height;
     }
 
-    fill(s.r, s.g, s.b, 180);
+    fill(s.r, s.g, s.b, 100); // Slightly lowered alpha so the custom image reads clearly
 
     if (s.type === "circle") {
       ellipse(s.x, screenY, s.size);
@@ -265,6 +356,13 @@ function drawObstacles() {
 function handleInput() {
   player.isMoving = false;
 
+  // Browser Autoplay Bypass Engine
+  if (keyIsDown(87) || keyIsDown(83) || keyIsDown(65) || keyIsDown(68)) {
+    if (getAudioContext().state === "suspended") {
+      getAudioContext().resume();
+    }
+  }
+
   if (keyIsDown(87)) {
     // W — up
     player.y -= player.speed;
@@ -294,12 +392,11 @@ function handleInput() {
     player.isMoving = true;
   }
 
-  // Bounds Calculations: Calculates half sizes dynamically to guarantee 0% screen cutoff
   let hw = (SPRITE.frameWidth * SPRITE.scale) / 2;
   let hh = (SPRITE.frameHeight * SPRITE.scale) / 2;
 
   player.x = constrain(player.x, hw, width - hw);
-  player.y = constrain(player.y, 70 + hh, height - hh); // Keeps asset under HUD panel bar
+  player.y = constrain(player.y, 70 + hh, height - hh);
 
   // Gun Cooldown Mechanics
   if (player.shootTimer > 0) player.shootTimer--;
@@ -311,6 +408,10 @@ function handleInput() {
       vx: player.dirVector.x * BULLET_SPEED,
       vy: player.dirVector.y * BULLET_SPEED,
     });
+
+    // NEW: Triggers our gunshot audio file upon project requirements
+    shootSound.play();
+
     player.shootTimer = SHOOT_COOLDOWN;
   }
 }
@@ -383,7 +484,7 @@ function checkObstaclePlayerCollision() {
       }
 
       if (player.health <= 0) {
-        gameState = STATE_OVER;
+        terminateLevel(STATE_OVER);
       }
       break;
     }
@@ -425,14 +526,16 @@ function spawnEnemies() {
   enemies.push({
     x: random(30, width - 30),
     y: -25,
-    r: 20,
+    r: (ENEMY_SPRITE.frameWidth * ENEMY_SPRITE.scale) / 2,
     speed: speed,
-    blobT: random(100),
+    direction: "down",
+    currentFrame: 0,
+    frameTimer: 0,
   });
 }
 
 // ------------------------------------------------------------
-// updateEnemies()
+// updateEnemies() — Updated with tracking orientation and animations
 // ------------------------------------------------------------
 function updateEnemies() {
   for (let i = enemies.length - 1; i >= 0; i--) {
@@ -442,11 +545,26 @@ function updateEnemies() {
     let d = dist(e.x, e.y, player.x, player.y);
 
     if (d > 0) {
-      e.x += (dx / d) * e.speed;
-      e.y += (dy / d) * e.speed;
+      let moveX = (dx / d) * e.speed;
+      let moveY = (dy / d) * e.speed;
+
+      e.x += moveX;
+      e.y += moveY;
+
+      if (abs(moveX) > abs(moveY)) {
+        e.direction = moveX > 0 ? "right" : "left";
+      } else {
+        e.direction = moveY > 0 ? "down" : "up";
+      }
     }
 
     e.y += SCROLL_SPEED;
+
+    e.frameTimer++;
+    if (e.frameTimer >= ENEMY_SPRITE.animSpeed) {
+      e.frameTimer = 0;
+      e.currentFrame = (e.currentFrame + 1) % ENEMY_SPRITE.numFrames;
+    }
 
     if (e.y > height + 30) {
       enemies.splice(i, 1);
@@ -479,13 +597,13 @@ function checkEnemyPlayerCollision() {
 
   for (let i = 0; i < enemies.length; i++) {
     let d = dist(player.x, player.y, enemies[i].x, enemies[i].y);
-    if (d < player.r + enemies[i].r - 8) {
+    if (d < player.r + enemies[i].r - 4) {
       player.health--;
       player.invincible = true;
       player.invincibleTimer = INVINCIBLE_FRAMES;
 
       if (player.health <= 0) {
-        gameState = STATE_OVER;
+        terminateLevel(STATE_OVER);
       }
       break;
     }
@@ -509,7 +627,7 @@ function updateInvincibility() {
 // ------------------------------------------------------------
 function checkLevelComplete() {
   if (scrollY >= WORLD_LENGTH) {
-    gameState = STATE_WIN;
+    terminateLevel(STATE_WIN);
   }
 }
 
@@ -525,46 +643,46 @@ function drawBullets() {
 }
 
 // ------------------------------------------------------------
-// drawEnemies()
+// drawEnemies() — Slices and draws the evil avatar texture sheet
 // ------------------------------------------------------------
 function drawEnemies() {
   for (let i = 0; i < enemies.length; i++) {
     let e = enemies[i];
     push();
-    fill(255, 150, 30);
-    noStroke();
 
-    beginShape();
-    let numPoints = 48;
-    for (let j = 0; j < numPoints; j++) {
-      let angle = (TWO_PI / numPoints) * j;
-      let noiseVal = noise(
-        cos(angle) * 0.8 + e.blobT,
-        sin(angle) * 0.8 + e.blobT,
-      );
-      let r = e.r + map(noiseVal, 0, 1, -5, 5);
-      vertex(e.x + cos(angle) * r, e.y + sin(angle) * r);
-    }
-    endShape(CLOSE);
+    let row = ENEMY_SPRITE.rows[e.direction];
+    let offset = ENEMY_SPRITE.offsets[e.direction];
 
-    fill(10);
-    ellipse(e.x - 6, e.y - 4, 6, 6);
-    ellipse(e.x + 6, e.y - 4, 6, 6);
+    let sx = e.currentFrame * ENEMY_SPRITE.frameWidth + offset.x;
+    let sy = row * ENEMY_SPRITE.frameHeight + offset.y;
+
+    let dw = ENEMY_SPRITE.frameWidth * ENEMY_SPRITE.scale;
+    let dh = ENEMY_SPRITE.frameHeight * ENEMY_SPRITE.scale;
+
+    image(
+      evilAvatarSpriteSheet,
+      e.x,
+      e.y,
+      dw,
+      dh,
+      sx,
+      sy,
+      ENEMY_SPRITE.frameWidth,
+      ENEMY_SPRITE.frameHeight,
+    );
+
     pop();
-
-    e.blobT += 0.015;
   }
 }
 
 // ------------------------------------------------------------
-// drawPlayer() — Slices & draws good_avatar using your exact row and offset properties
+// drawPlayer()
 // ------------------------------------------------------------
 function drawPlayer() {
   if (player.invincible && floor(player.invincibleTimer / 6) % 2 === 0) return;
 
   push();
 
-  // Extraction calculations matching your values
   let row = SPRITE.rows[player.direction];
   let offset = SPRITE.offsets[player.direction];
 
@@ -574,7 +692,6 @@ function drawPlayer() {
   let dw = SPRITE.frameWidth * SPRITE.scale;
   let dh = SPRITE.frameHeight * SPRITE.scale;
 
-  // Render call
   image(
     goodAvatarSpriteSheet,
     player.x,
@@ -587,7 +704,6 @@ function drawPlayer() {
     SPRITE.frameHeight,
   );
 
-  // Crosshair reticle tracked forward from character face boundary
   fill(255);
   noStroke();
   ellipse(
@@ -603,7 +719,11 @@ function drawPlayer() {
 // drawHUD()
 // ------------------------------------------------------------
 function drawHUD() {
+  // Semi-transparent box behind HUD to ensure text readability over your custom image asset
   noStroke();
+  fill(20, 20, 20, 150);
+  rect(0, 0, width, 70);
+
   fill(160);
   textSize(13);
   textAlign(LEFT);
@@ -688,28 +808,10 @@ function drawGameOver() {
 }
 
 // ------------------------------------------------------------
-// keyPressed()
+// INTERACTION
 // ------------------------------------------------------------
 function keyPressed() {
   if ((key === "r" || key === "R") && gameState !== STATE_PLAY) {
-    gameState = STATE_PLAY;
-    score = 0;
-    scrollY = 0;
-    spawnTimer = 0;
-    bullets = [];
-    enemies = [];
-
-    player.x = 400;
-    player.y = 370;
-    player.direction = "up";
-    player.dirVector = { x: 0, y: -1 };
-    player.currentFrame = 0;
-    player.frameTimer = 0;
-    player.shootTimer = 0;
-    player.health = player.maxHealth;
-    player.invincible = false;
-    player.invincibleTimer = 0;
-    player.bounceVX = 0;
-    player.bounceVY = 0;
+    resetGameSequence();
   }
 }
